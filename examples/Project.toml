@@ -1,0 +1,5 @@
+[deps]
+Ferrite = "c061ca5d-56c9-439f-9c0e-210fe06d3992"
+Tensors = "48a634ad-e948-5137-8d70-aa71f2a747f4"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+UniversalMaterialModel = "451d549b-da3a-4afd-9dba-1924b1a1c089"
