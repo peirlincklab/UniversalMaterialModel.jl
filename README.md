@@ -6,7 +6,7 @@ A universal material model for [Tensors.jl](https://github.com/Ferrite-FEM/Tenso
 
 ## Installation
 
-The package can be installed with the Julia package manager. From the Julia REPL, type ] to enter the Pkg REPL mode and run:
+The package can be installed with the Julia package manager. From the Julia REPL, type `]` to enter the Pkg REPL mode and run:
 ```julia
 pkg> add UniversalMaterialModel
 ```
@@ -28,9 +28,9 @@ material = load_material("NoeHooke.inp")
 or by passing a `Vector` of `NTuple{7, Float64}` representing each neuron of the material model
 ```julia
 using UniversalMaterialModel
-# NeoHook model tab
-terms = [(1.0,1.0,1.0,1.0,1.0,1.0,μ/2),
-         (3.0,1.0,2.0,1.0,1.0,1.0,λ/2)]
+# NeoHook model tab (Inv, h₀, h₁, h₂, w₀, w₁, w₂)
+terms = [(1, 1, 1, 1, 1.0, 1.0, μ/2),
+         (3, 1, 2, 1, 1.0, 1.0, λ/2)]
 # build the material model
 material = UniversalMaterialModel.build_material(terms)
 ```
