@@ -71,11 +71,10 @@ f2 = Vec{3}((0.0, 1.0, 0.0))
 # evaluate
 S, ∂S∂C = material(C; fibers=(f1, f2))
 ```
-where `fibers` is a tuple containing the fiber directions at the integration point, with a maximum of three fiber families.
+where `fibers` is a tuple containing the fiber directions at the integration point, with a maximum of three fiber directions (`f₁`, `f₂`, `f₃`).
 
 ### Invariant definitions and reference values
 
-You can use up to 3 fiber families (`f₁`, `f₂`, `f₃`):
 | Index | Formula                  |  Reference (unit fibers) |
 |-------|--------------------------|--------------------------|
 |   1   | `tr(C)`                  | `3`                      |
@@ -93,12 +92,6 @@ You can use up to 3 fiber families (`f₁`, `f₂`, `f₃`):
 |  13   | `f₂ · C² · f₃`           | `f₂·f₃`                  |
 |  14   | `f₃ · C · f₃`            | `1`                      |
 |  15   | `f₃ · C² · f₃`           | `1`                      |
-
-The Fibers–Invariant mapping follows the Fortran subroutine:
-  `Nfibers = 0` → `Inv =  3`  (I₁–I₃)
-  `Nfibers = 1` → `Inv =  5`  (I₁–I₅)
-  `Nfibers = 2` → `Inv =  9`  (I₁–I₉)
-  `Nfibers = 3` → `Inv = 15`  (I₁–I₁₅)
 
 ## How to Cite
 
