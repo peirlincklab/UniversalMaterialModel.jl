@@ -2,43 +2,12 @@ module UniversalMaterialModel
 
 using Tensors
 
-export UniversalMaterial, Ψ, evaluate, load_material
-
-"""
-    Each neuron computes:
-
-      W_neuron(x) = w₂ · h₂( w₁ · h₁( w₀ · h₀(x) ) )
-
-    where  x = Ĩₖ = Iₖ − Iₖ⁰  is the invariant shifted by its reference value
-    (ensures W = 0 in the undeformed configuration).
-
-    Layer roles:
-      h₀  – input activation (controls domain)
-      h₁  – polynomial power law
-      h₂  – monotone output activation (guarantees energy growth conditions)
-"""
-# h₀ — zeroth layer
-@inline h0(::Val{1}, x) = x                          # identity
-@inline h0(::Val{2}, x) = max(x, zero(x))            # Macaulay bracket ⟨x⟩ (ReLU)
-@inline h0(::Val{3}, x) = abs(x)                     # absolute value
-
-# h₁ — first layer: (w·x)^p
-@inline h1(::Val{p}, w, x) where {p} = (w * x)^p
-
-# h₂ — second layer
-@inline h2(::Val{1}, w, x) = w * x                   # linear
-@inline h2(::Val{2}, w, x) = exp(w * x) - one(x)    # exp − 1   (unbounded growth)
-@inline h2(::Val{3}, w, x) = -log(one(x) - w * x)   # −ln(1−wx) (singular barrier)
-
-# Single CANN neuron — k values are Val{} so dispatch is resolved at compile time.
-@inline function cann_neuron(::Val{k0}, ::Val{k1}, ::Val{k2}, w0, w1, w2, x) where {k0, k1, k2}
-    w2 * h2(Val(k2), w1, h1(Val(k1), w0, h0(Val(k0), x)))
-end
+export UniversalMaterial, Ψ, load_material
 
 """
     UniversalMaterial{Topology, Nfibers, N}
 
-Incompressible CANN hyperelastic material.
+Universal material model.
 
 Type parameters (compile-time — these drive the `@generated` specialisation):
   - `Topology` – `NTuple{N, NTuple{4,Int}}`: one `(kInv, k0, k1, k2)` tuple per neuron.
@@ -49,66 +18,67 @@ Type parameters (compile-time — these drive the `@generated` specialisation):
 Runtime field:
   - `weights`  – `NTuple{N, NTuple{3,Float64}}`: one `(w0, w1, w2)` weight triple per neuron.
 
-Construct via `load_material(filename)` — do not build directly.
+Construct via `load_material(filename)`
+```julia
+mat = load_material("NoeHooke.inp")
+```
+or by passing tuples of topology and weights directly, example
+```julia
+# Material parameters for NeoHooke
+C₁₀ = 2.0
+D₁  = 0.1
+terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
+         (3.0,1.0,2.0,1.0,1.0,1.0,inv(D₁))]
+mat = UniversalMaterialModel.build_material(terms)
+```
 """
 struct UniversalMaterial{Topology, Nfibers, N}
     weights::NTuple{N, NTuple{3, Float64}}
 end
 
-function Base.show(io::IO, mat::UniversalMaterial{Topology, Nfibers, N}) where {Topology, Nfibers, N}
-    print(io, "UniversalMaterial(N=$N neurons, Nfibers=$Nfibers, topology=[")
-    for i in 1:N
-        kInv, k0, k1, k2 = Topology[i]
-        i > 1 && print(io, ", ")
-        print(io, "(I$kInv, h0=$k0, h1=$k1, h2=$k2)")
-    end
-    print(io, "])")
+"""
+    mat{UniversalMaterial}(C; fibers=()) → (S, ∂S∂C)
+
+Evaluate the `UniversalMaterial` at right Cauchy-Green deformation tensor `C=Fᵀ·F`.
+
+# Arguments
+- `mat`    – `UniversalMaterial`
+- `C`      – right Cauchy-Green deformation tensor `SymmetricTensor{2,3}` (e.g. from a Ferrite integration point)
+- `fibers` – `NTuple{Nfibers, Vec{3}}` of reference-configuration fiber unit vectors;
+              use `()` for isotropic materials
+
+# Returns
+- `S` – second Piola-Kirchhoff stress `∂Ψ/∂C`          (`SymmetricTensor{2,3}`)
+- `∂S∂C` – material tangent           `∂²Ψ/∂C∂C`       (`SymmetricTensor{4,3}`)
+
+`S` and `∂S∂C` are obtained by automatic differentiation of `Ψ(C)` via `Tensors.hessian` (nested dual numbers).
+
+# Examples
+
+Isotropic brain material (no fibers):
+```julia
+    mat     = load_material("brain-cnn.inp")
+    F       = one(Tensor{2,3})
+    C       = tdot(F)
+    S, ∂S∂C = mat(C)
+```
+Two-fiber-family artery material:
+```julia
+    mat     = load_material("artery-cnn.inp"; material_name="MATADV")
+    f1      = Vec{3}((1.0, 0.0, 0.0))
+    f2      = Vec{3}((0.0, 1.0, 0.0))
+    S, ∂S∂C = mat(C; fibers=(f1, f2))
+```
+"""
+function (mp::UniversalMaterial)(C::SymmetricTensor{2,3}; fibers=()) # fibres in kwargs
+    # Compute all derivatives in one function call
+    ∂²Ψ∂C², ∂Ψ∂C = Tensors.hessian(y -> Ψ(y, mp; fibers=fibers), C, :all)
+    S = 2.0 * ∂Ψ∂C
+    ∂S∂C = 2.0 * ∂²Ψ∂C²
+    return S, ∂S∂C
 end
 
-# Invariant definitions and reference values
-#
-# up to 3 fiber families (f₁, f₂, f₃):
-#
-#  Index  Formula                    Reference (C=I, unit fibers)
-#  ─────  ─────────────────────────  ────────────────────────────
-#    1    tr(C)                      3
-#    2    (tr(C)² − tr(C²)) / 2     3
-#    3    det(C)                     1
-#    4    f₁ · C · f₁               1
-#    5    f₁ · C² · f₁              1       [ = |C·f₁|² ]
-#    6    f₁ · C · f₂               f₁·f₂
-#    7    f₁ · C² · f₂              f₁·f₂   [ = (C·f₁)·(C·f₂) ]
-#    8    f₂ · C · f₂               1
-#    9    f₂ · C² · f₂              1       [ = |C·f₂|² ]
-#   10    f₁ · C · f₃               f₁·f₃
-#   11    f₁ · C² · f₃              f₁·f₃   [ = (C·f₁)·(C·f₃) ]
-#   12    f₂ · C · f₃               f₂·f₃
-#   13    f₂ · C² · f₃              f₂·f₃   [ = (C·f₂)·(C·f₃) ]
-#   14    f₃ · C · f₃               1
-#   15    f₃ · C² · f₃              1       [ = |C·f₃|² ]
-#
-# The nFibers–nInv mapping follows the Fortran subroutine:
-#   Nfibers = 0 → nInv =  3  (I₁–I₃)
-#   Nfibers = 1 → nInv =  5  (I₁–I₅)
-#   Nfibers = 2 → nInv =  9  (I₁–I₉)
-#   Nfibers = 3 → nInv = 15  (I₁–I₁₅)
-
-# Code-generation helper (runs at @generated compile time, not at runtime).
-# Returns either a Float64 literal or an Expr involving the runtime `fibers` argument.
-function _ref_expr(k::Int)
-    k == 1       && return 3.0
-    k == 2       && return 3.0
-    k == 3       && return 1.0
-    k ∈ (4, 5)   && return 1.0
-    k ∈ (6, 7)   && return :(fibers[1] ⋅ fibers[2])
-    k ∈ (8, 9)   && return 1.0
-    k ∈ (10, 11) && return :(fibers[1] ⋅ fibers[3])
-    k ∈ (12, 13) && return :(fibers[2] ⋅ fibers[3])
-    k ∈ (14, 15) && return 1.0
-    error("Invariant index $k not supported (valid range: 1–15)")
-end
-
-# @generated strain energy  W(F)
+# @generated strain energy  Ψ(F)
 #
 # The generator runs once per distinct (Topology, Nfibers, N, T) combination
 # and emits a flat, fully unrolled Expr with:
@@ -160,71 +130,69 @@ end
         15 ∈ needed && push!(expr, :(I15 = Cf3 ⋅ Cf3))  # |C·f₃|²  = f₃·C²·f₃
     end
     # Unrolled neuron contributions
-    # Each iteration i is a compile-time constant; the loop is fully unrolled.
-    # kf₀/kf₁/kf₂ are embedded as Val{} literals so layer-function dispatch
-    # is resolved at compile time with zero runtime branching.
     push!(expr, :(W = zero($T)))
     for i in 1:N
         kInv, kf0, kf1, kf2 = Topology[i]
         inv_sym = Symbol(:I, kInv)
         # Build reference expression: either a numeric literal or a fiber dot product.
-        ref     = _ref_expr(kInv)
-        ref_ex  = ref isa Expr ? ref : :($ref)
-        push!(expr, :(W += cann_neuron($(Val(kf0)), $(Val(kf1)), $(Val(kf2)), mat.weights[$i][1],
-                                        mat.weights[$i][2], mat.weights[$i][3], $inv_sym - $ref_ex)))
+        ref    = ref_expr(kInv)
+        ref_ex = ref isa Expr ? ref : :($ref)
+        w0_ex  = :(mat.weights[$i][1])
+        w1_ex  = :(mat.weights[$i][2])
+        w2_ex  = :(mat.weights[$i][3])
+        push!(expr, :(W += $(neuron_expr(Val(kf0), Val(kf1), Val(kf2), w0_ex, w1_ex, w2_ex, :($inv_sym - $ref_ex)))))
     end
     # return value
     push!(expr, :(return W))
     return Expr(:block, expr...)
 end
-"""
-    evaluate(mat, F, fibers) → (W, P, A)
 
-Evaluate the `UniversalMaterial` at deformation gradient `F`.
 
-# Arguments
-- `mat`    – `UniversalMaterial` from `load_material`
-- `F`      – deformation gradient `Tensor{2,3}` (e.g. from a Ferrite integration point)
-- `fibers` – `NTuple{Nfibers, Vec{3}}` of reference-configuration fiber unit vectors;
-             use `()` for isotropic materials
+# h₀ — zeroth layer
+h0_expr(::Val{1}, x) = x                            # identity  →  x
+h0_expr(::Val{2}, x) = :(max($x, zero($x)))         # Macaulay  →  max(x, 0)
+h0_expr(::Val{3}, x) = :(abs($x))                   # absolute  →  abs(x)
 
-# Returns
-- `W` – strain energy density                          (scalar)
-- `P` – first Piola-Kirchhoff stress `∂W/∂F`          (`Tensor{2,3}`)
-- `A` – material tangent             `∂²W/∂F∂F`       (`Tensor{4,3}`)
+# h₁ — first layer: (w·x)^p  (p is a compile-time integer literal)
+h1_expr(::Val{p}, w, x) where {p} = :(($w * $x)^$p)
 
-`P` and `A` are obtained by automatic differentiation of `W(F)` via
-`Tensors.gradient` and `Tensors.hessian` (nested dual numbers).  No hand-coded
-stress or tangent expressions are needed.
+# h₂ — second layer
+h2_expr(::Val{1}, w, x) = :($w * $x)
+h2_expr(::Val{2}, w, x) = :(exp($w * $x) - one($x))
+h2_expr(::Val{3}, w, x) = :(-log(one($x) - $w * $x))
 
-# Examples
-
-Isotropic brain material (no fibers):
-    mat     = load_material("brain-cnn.inp")
-    F       = one(Tensor{2,3})
-    W, P, A = evaluate(mat, F, ())
-
-Two-fiber-family artery material:
-    mat     = load_material("artery-cnn.inp"; material_name="MATADV")
-    f1      = Vec{3}((1.0, 0.0, 0.0))
-    f2      = Vec{3}((0.0, 1.0, 0.0))
-    W, P, A = evaluate(mat, F, (f1, f2))
-"""
-# function evaluate(mat::UniversalMaterial{Topology, Nfibers, N},F::Tensor{2, 3, T},fibers::NTuple{Nfibers, Vec{3}},) where {Topology, Nfibers, N, T}
-#     W_of_F = F_ -> Ψ(mat, F_, fibers)
-#     P, W   = gradient(W_of_F, F, :all)    # ∇W, W(F)  — one forward pass
-#     A      =  hessian(W_of_F, F)          # ∂²W/∂F²   — nested dual pass
-#     return W, P, A
-# end
-# make it callable
-function (mp::UniversalMaterial)(C::SymmetricTensor{2,3}; fibers=()) # fibres in kwargs
-    # Compute all derivatives in one function call
-    ∂²Ψ∂C², ∂Ψ∂C = Tensors.hessian(y -> Ψ(y, mp; fibers=fibers), C, :all)
-    S = 2.0 * ∂Ψ∂C
-    ∂S∂C = 2.0 * ∂²Ψ∂C²
-    return S, ∂S∂C
+# Full neuron expression: w2 · h2( w1 · h1( w0 · h0(x) ) )
+function neuron_expr(::Val{k0}, ::Val{k1}, ::Val{k2}, w0, w1, w2, x) where {k0, k1, k2}
+    inner = h0_expr(Val(k0), x)
+    mid   = h1_expr(Val(k1), w0, inner)
+    outer = h2_expr(Val(k2), w1, mid)
+    return :($w2 * $outer)
 end
 
+# pretty print
+function Base.show(io::IO, mat::UniversalMaterial{Topology, Nfibers, N}) where {Topology, Nfibers, N}
+    print(io, "UniversalMaterial(N=$N neurons, Nfibers=$Nfibers, topology=[")
+    for i in 1:N
+        kInv, k0, k1, k2 = Topology[i]
+        i > 1 && print(io, ", ")
+        print(io, "(I$kInv, h0=$k0, h1=$k1, h2=$k2)")
+    end
+    print(io, "])")
+end
+
+# term to add to move invariant into reference configuration.
+function ref_expr(k::Int)
+    k == 1       && return 3.0
+    k == 2       && return 3.0
+    k == 3       && return 1.0
+    k ∈ (4, 5)   && return 1.0
+    k ∈ (6, 7)   && return :(fibers[1] ⋅ fibers[2])
+    k ∈ (8, 9)   && return 1.0
+    k ∈ (10, 11) && return :(fibers[1] ⋅ fibers[3])
+    k ∈ (12, 13) && return :(fibers[2] ⋅ fibers[3])
+    k ∈ (14, 15) && return 1.0
+    error("Invariant index $k not supported (valid range: 1–15)")
+end
 
 """
     load_material(filename; material_name=nothing) → UniversalMaterial
@@ -258,7 +226,7 @@ where:
   `strain_energy` function for that topology.
 """
 function load_material(filename::String; material_name::Union{String, Nothing}=nothing)
-    rows = _parse_universal_tab(filename, material_name)
+    rows = parse_universal_tab(filename, material_name)
     isempty(rows) && error(
         "No UNIVERSAL_TAB data found in \"$filename\"" *
         (material_name === nothing ? "" : " for material \"$material_name\""),
@@ -266,18 +234,8 @@ function load_material(filename::String; material_name::Union{String, Nothing}=n
     return build_material(rows)
 end
 
-"""
-*PARAMETER TABLE, type="UNIVERSAL_TAB"
-2,1,2,1,1.0,2.2725620E+00,2.2725594E-03
-4,2,2,2,1.0,2.1151228E+01,8.1170170E-05
-14,2,2,2,1.0,4.3718562E+00,3.1552851E-04
-6,1,2,2,1.0,5.0801408E-01,4.8645619E-04
-"""
-# Each parsed row: (kInv, kf0, kf1, kf2, w0, w1, w2) stored as Float64 for uniform parsing.
-const _Row = NTuple{7, Float64}
-
-function _parse_universal_tab(filename::String,material_name::Union{String, Nothing}) :: Vector{_Row}
-    rows   = _Row[]
+function parse_universal_tab(filename::String,material_name::Union{String, Nothing}) :: Vector{NTuple{7, Float64}}
+    rows   = NTuple{7, Float64}[]
     target = material_name !== nothing ? uppercase(strip(material_name)) : nothing
 
     # When no name filter is given we accept the very first UNIVERSAL_TAB found.
@@ -322,11 +280,17 @@ function _parse_universal_tab(filename::String,material_name::Union{String, Noth
 end
 
 
-function build_material(rows::Vector{_Row})
+"""
+    build_material(rows::Vector{Tuple{7}})
+
+Builds a UniversalMaterial using a given vector of neurons, where every neuron is either
+a `Tuple{7, Number}` or `NTuple{7, Float64}`.
+"""
+build_material(rows) = build_material([ntuple(i->Float64(row[i]),7) for row in rows])
+function build_material(rows::Vector{NTuple{7, Float64}})
     N = length(rows)
 
     # The network topology — (kInv, kf0, kf1, kf2) per neuron — becomes a type parameter.
-    # Julia allows NTuple{N, NTuple{4,Int}} as a type parameter (all isbits values).
     topology = ntuple(i -> ntuple(j -> Int(rows[i][j]), 4), N)
     weights  = ntuple(i -> (rows[i][5], rows[i][6], rows[i][7]), N)
 
@@ -335,7 +299,6 @@ function build_material(rows::Vector{_Row})
                max_kinv ≤  5 ? 1 :
                max_kinv ≤  9 ? 2 : 3
 
-    # Explicitly specialise on the topology value — this is what drives @generated dispatch.
     return UniversalMaterial{topology, Nfibers, N}(weights)
 end
 

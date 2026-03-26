@@ -13,7 +13,71 @@ function UniversalMaterialModel.Ψ(C, mp::NeoHooke)
     return C₁₀ * (I₁ - 3) + inv(D₁) * (I₃ - 1)^2
 end
 
-function constitutive_driver(C, mp::NeoHooke)
+struct MooneyRivlin
+    C₁₀::Float64
+    C₀₁::Float64
+    D₁::Float64
+end
+
+function UniversalMaterialModel.Ψ(C, mp::MooneyRivlin)
+    C₁₀ = mp.C₁₀
+    C₀₁ = mp.C₀₁
+    D₁ = mp.D₁
+    I₁ = tr(C)
+    I₂ = (I₁ * I₁ - dcontract(C, C)) / 2
+    I₃ = det(C)
+    return C₁₀ * (I₁ - 3) + C₀₁ * (I₂ - 3) + inv(D₁) * (I₃ - 1)^2
+end
+
+struct Yeon
+    C₁₀::Float64
+    C₂₀::Float64
+    C₃₀::Float64
+    D₁::Float64
+    D₂::Float64
+    D₃::Float64
+end
+
+function UniversalMaterialModel.Ψ(C, mp::Yeon)
+    C₁₀ = mp.C₁₀
+    C₂₀ = mp.C₂₀
+    C₃₀ = mp.C₃₀
+    D₁ = mp.D₁
+    D₂ = mp.D₂
+    D₃ = mp.D₃
+    I₁ = tr(C)
+    I₃ = det(C)
+    return C₁₀ * (I₁ - 3) + C₂₀ * (I₁ - 3)^2 + C₃₀ * (I₁ - 3)^3 +
+           inv(D₁) * (I₃ - 1)^2 + inv(D₂) * (I₃ - 1)^4 + inv(D₃) * (I₃ - 1)^6
+end
+
+struct Holzapfel
+    C₁₀::Float64
+    k₁::Float64
+    k₂::Float64
+    D ::Float64
+    f₁::Vec{3,Float64}
+    f₂::Vec{3,Float64}
+end
+
+function UniversalMaterialModel.Ψ(C, mp::Holzapfel)
+    C₁₀ = mp.C₁₀
+    k₁ = mp.k₁
+    k₂ = mp.k₂
+    D = mp.D
+    I₁ = tr(C)
+    I₃ = det(C)
+    f₁ = mp.f₁
+    f₂ = mp.f₂
+    I₄₁₁ = f₁ ⋅ C ⋅ f₁
+    I₄₂₂ = f₂ ⋅ C ⋅ f₂
+    Tf₁ = k₁ / (2 * k₂) * (exp(k₂ * max((I₄₁₁ - 1)^2, 0)) - 1)
+    Tf₂ = k₁ / (2 * k₂) * (exp(k₂ * max((I₄₂₂ - 1)^2, 0)) - 1)
+    return C₁₀ * (I₁ - 3) + inv(D) * ((I₃^2 - 1) / 2 - log(I₃)) + Tf₁ + Tf₂
+end
+
+# evaluate any strain-energy function and its derivatives with respect to C
+function constitutive_driver(C, mp)
     # Compute all derivatives in one function call
     ∂²Ψ∂C², ∂Ψ∂C = Tensors.hessian(y -> Ψ(y, mp), C, :all)
     S = 2.0 * ∂Ψ∂C
@@ -21,75 +85,119 @@ function constitutive_driver(C, mp::NeoHooke)
     return S, ∂S∂C
 end
 
+# deformation gradient and right Cauchy-Green tensor
+F() = rand(Tensor{2, 3, Float64}) + one(Tensor{2, 3, Float64})
+Cs = [tdot(F()) for _ in 1:10]
 
-# import UniversalMaterialModel: cann_neuron
-# function test_generated(C, mat::UniversalMaterial{Topology, Nfibers, N}) where {Topology, Nfibers, N}
-#     T = eltype(C)
-#     # Invariant indices actually referenced by this particular network.
-#     needed = Set{Int}(Topology[i][1] for i in 1:N)
-#     expr = Expr[]
-#     # I₁ is also needed as an intermediate for I₂
-#     !isempty(needed ∩ (1:2)) && push!(expr, :(I1 = tr(C)))
-#     # I₂ = tr(C²) = dcontract(C,C) for symmetric C
-#     2 ∈ needed && push!(expr, :(I2 = (I1 * I1 - dcontract(C, C)) / 2))
-#     # I₃ in the list
-#     3 ∈ needed && push!(expr, :(I3 = det(C)))
-#     # fiber_contributions!(expr, fibers)
-#     # build the strain energy
-#     push!(expr, :(W = zero($T)))
-#     for i in 1:N
-#         kInv, kf0, kf1, kf2 = Topology[i]
-#         inv_sym = Symbol(:I, kInv)
-#         # Build reference expression: either a numeric literal or a fiber dot product.
-#         ref     = UniversalMaterialModel._ref_expr(kInv)
-#         ref_ex  = ref isa Expr ? ref : :($ref)
-#         push!(expr, :(W += cann_neuron($(Val(kf0)), $(Val(kf1)), $(Val(kf2)), mat.weights[$i][1],
-#                                         mat.weights[$i][2], mat.weights[$i][3], $inv_sym - $ref_ex)))
-#     end
-#     # return value
-#     push!(expr, :(return W))
-#     return Expr(:block, expr...)
-# end
+@testset "NeoHook model      " begin
+    # Material parameters for NeoHooke
+    C₁₀ = 2.0
+    D₁  = 0.1
+    mp = NeoHooke(C₁₀, D₁)
 
-# Material parameters
-E = 10.0
-ν = 0.3
-μ = E / (2(1 + ν))
-λ = (E * ν) / ((1 + ν) * (1 - 2ν))
-C₁₀ = μ/2.0
-D₁  = 2.0 / (3.0 * μ + λ)
-mp = NeoHooke(C₁₀, D₁)
+    # NeoHook model tab
+    terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
+            (3.0,1.0,2.0,1.0,1.0,1.0,inv(D₁))]
+    mat = UniversalMaterialModel.build_material(terms)
 
-# NeoHook model tab
-# terms of the CaNN
-terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
-         (3.0,1.0,2.0,1.0,2.0,1.0,inv(D₁))]
+    for C in Cs
+        # strain energies
+        ψ = Ψ(C, mat; fibers=())
+        ψₑ = Ψ(C, mp)
+        @test ψ ≈ ψₑ
+        # stress and tangent
+        S, ∂S∂C = mat(C)
+        Sₑ,∂S∂Cₑ= constitutive_driver(C, mp)
+        @test all(S .≈ Sₑ)
+        @test all(∂S∂C .≈ ∂S∂Cₑ)
+    end
+end
 
-# should be exported
-mat = UniversalMaterialModel.build_material(terms)
+@testset "Mooney-Rivlin model" begin
+    # Monly-Rivlin model tab
+    C₁₀ = 1.0
+    C₀₁ = 0.5
+    D₁  = 0.1
+    mp = MooneyRivlin(C₁₀, C₀₁, D₁)
+    terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
+            (2.0,1.0,1.0,1.0,1.0,1.0,C₀₁),
+            (3.0,1.0,2.0,1.0,1.0,1.0,inv(D₁))]
+    mat = UniversalMaterialModel.build_material(terms)
 
-F = rand(Tensor{2, 3, Float64}) + one(Tensor{2, 3, Float64})
-C = tdot(F)
+    for C in Cs
+        # strain energies
+        ψ = Ψ(C, mat; fibers=())
+        ψₑ = Ψ(C, mp)
+        @test ψ ≈ ψₑ
+        # stress and tangent
+        S, ∂S∂C = mat(C)
+        Sₑ,∂S∂Cₑ= constitutive_driver(C, mp)
+        @test all(S .≈ Sₑ)
+        @test all(∂S∂C .≈ ∂S∂Cₑ)
+    end
+end
 
-Ψ(C, mat; fibers=())
+@testset "Yeon model         " begin
+    # Yeon model tab
+    C₁₀ = 1.0
+    C₂₀ = 0.5
+    C₃₀ = 0.2
+    D₁  = 0.1
+    D₂  = 0.05
+    D₃  = 0.01
+    mp = Yeon(C₁₀, C₂₀, C₃₀, D₁, D₂, D₃)
+    terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
+            (1.0,1.0,2.0,1.0,1.0,1.0,C₂₀),
+            (1.0,1.0,3.0,1.0,1.0,1.0,C₃₀),
+            (3.0,1.0,2.0,1.0,1.0,1.0,inv(D₁)),
+            (3.0,1.0,4.0,1.0,1.0,1.0,inv(D₂)),
+            (3.0,1.0,6.0,1.0,1.0,1.0,inv(D₃))]
+    mat = UniversalMaterialModel.build_material(terms)
 
-Ψ(C, mp)
+    for C in Cs
+        # strain energies
+        ψ = Ψ(C, mat; fibers=())
+        ψₑ = Ψ(C, mp)
+        @test ψ ≈ ψₑ
+        # stress and tangent
+        S, ∂S∂C = mat(C)
+        Sₑ,∂S∂Cₑ= constitutive_driver(C, mp)
+        @test all(S .≈ Sₑ)
+        @test all(∂S∂C .≈ ∂S∂Cₑ)
+    end
+end
 
-S, ∂S∂C = mat(C)
-Sₑ,∂S∂Cₑ= constitutive_driver(C, mp)
+@testset "Holzapfel model    " begin
+    # Holzapfel model tab
+    C₁₀ = 1.0
+    k₁  = 0.5
+    k₂  = 2.0
+    D   = 0.1
+    f₁  = Vec(1.0, 0.0, 0.0)
+    f₂  = Vec(0.0, 1.0, 0.0)
+    mp = Holzapfel(C₁₀, k₁, k₂, D, f₁, f₂)
+    terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
+            (4.0,2.0,2.0,2.0,1.0,k₂,k₁/2k₂),
+            (8.0,2.0,2.0,2.0,1.0,k₂,k₁/2k₂),
+            (3.0,1.0,1.0,1.0,1.0,1.0,inv(D)),
+            (3.0,1.0,2.0,1.0,1.0,0.5,inv(D)),
+            (3.0,1.0,1.0,3.0,1.0,-1.0,inv(D))]
+    mat = UniversalMaterialModel.build_material(terms)
 
-# @time a = test_generated(C, mat)
+    for C in Cs
+        # strain energies
+        ψ = Ψ(C, mat; fibers=(f₁, f₂))
+        ψₑ = Ψ(C, mp)
+        @test ψ ≈ ψₑ
+        # stress and tangent
+        S, ∂S∂C = mat(C; fibers=(f₁, f₂))
+        Sₑ,∂S∂Cₑ= constitutive_driver(C, mp)
+        @test all(S .≈ Sₑ)
+        @test all(∂S∂C .≈ ∂S∂Cₑ)
+    end
+end
 
-# f1 = Vec{3}((1.0, 0.0, 0.0))
-# f2 = Vec{3}((0.0, 1.0, 0.0))
-# f3 = Vec{3}((0.0, 0.0, 1.0))
-
-# get the material at this state
-# S, ∂S∂C = mat(C)
-
-# S, ∂S∂C = constitutive_driver(C, mp)
-
-# NeoHook model
-# terms = ()
-
-# UniversalMaterial(terms)
+@testset "loading inp table  " begin
+    mat = load_material(joinpath(dirname(@__FILE__), "material.inp"))
+    @test mat !== nothing
+end
