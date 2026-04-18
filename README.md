@@ -3,7 +3,7 @@
 
 # UniversalMaterialModel.jl
 
-A universal material model for [Tensors.jl](https://github.com/Ferrite-FEM/Tensors.jl)-based finite element code.
+A universal material model for [Ferrite.jl](https://github.com/Ferrite-FEM/Ferrite.jl) or [Tensors.jl](https://github.com/Ferrite-FEM/Tensors.jl)-based finite element code.
 
 The implementation follows the ideas presented in the article:
 [**"A universal material model subroutine for soft matter systems", M. Peirlinck, J.A. Hurtado, M.K. Rausch, A. Buganza Tepole, E. Kuhl, Engineering with Computers, 2024**](https://doi.org/10.1007/s00366-024-02031-w).
