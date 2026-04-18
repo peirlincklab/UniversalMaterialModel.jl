@@ -79,6 +79,27 @@ function max_principal_stress(dh, cv, mat, u)
     return S_principal
 end
 
+function max_principal_stress_qp(dh, cv, mat, u)
+    n_qp = getnquadpoints(cv)
+    S₁   = [zeros(n_qp) for _ in 1:getncells(dh.grid)]
+    for cell in CellIterator(dh)
+        reinit!(cv, cell)
+        ue = u[celldofs(cell)]
+        qp_vals = S₁[cellid(cell)]
+        @inbounds for qp in 1:n_qp
+            ∇u = function_gradient(cv, qp, ue)
+            F  = one(∇u) + ∇u
+            C  = tdot(F)            # Fᵀ·F
+            S, _ = mat(C)
+            J  = det(F)
+            σ = symmetric(F ⋅ S ⋅ F') / (J * getnquadpoints(cv))
+            qp_vals[qp] = maximum(eigvals(σ))
+        end
+    end
+    return S₁
+end
+
+
 # Generate a grid
 N = 16
 L = 1.0
@@ -109,6 +130,9 @@ dh = DofHandler(grid)
 add!(dh, :u, ip) # Add a displacement field
 close!(dh)
 
+# L2 projection
+proj = L2Projector(ip, grid)
+
 function rotation(X, t)
     θ = pi / 2.0 # 90°
     x, y, z = X
@@ -130,20 +154,20 @@ close!(dbcs)
 )
 
 # Pre-allocation of vectors for the solution and Newton increments
-_ndofs = ndofs(dh)
-un = zeros(_ndofs) # previous solution vector
-u = zeros(_ndofs)
-Δu = zeros(_ndofs)
-ΔΔu = zeros(_ndofs)
+Ndofs = ndofs(dh)
+un = zeros(Ndofs) # previous solution vector
+u = zeros(Ndofs)
+Δu = zeros(Ndofs)
+ΔΔu = zeros(Ndofs)
 apply!(un, dbcs)
 
 # Create sparse matrix and residual vector
 K = allocate_matrix(dh)
-g = zeros(_ndofs)
+g = zeros(Ndofs)
 
-# Perform Newton iterations
-NEWTON_TOL = 1.0e-8
-NEWTON_MAXITER = 100
+# Newton iterations criterion
+tol = 1.0e-8
+maxiter = 100
 
 let λᵢ=0; @time for λ in 0.0:0.01:0.6
     # Newton solve for current displacement step
@@ -161,11 +185,10 @@ let λᵢ=0; @time for λ in 0.0:0.01:0.6
         apply_zero!(K, g, dbcs)
         # Compute the residual norm and compare with tolerance
         normg = norm(g)
-        if normg < NEWTON_TOL
-            break
-        elseif newton_itr > NEWTON_MAXITER
-            error("Reached maximum Newton iterations, aborting at $(norm(g))")
-        end
+
+        # check conv or exit
+        normg < tol && break
+        newton_itr > maxiter && error("Reached maximum Newton iterations, aborting at $(norm(g))")
 
         # Compute Newton increment via direct solve
         ΔΔu .= K \ g
@@ -181,8 +204,10 @@ end;
 end
 
 # Save the solution
-σ₁ = max_principal_stress(dh, cv, mat, u)
-VTKGridFile("hyperelasticity", dh) do vtk
+# σ₁ = max_principal_stress(dh, cv, mat, u)
+σ₁ = max_principal_stress_qp(dh, cv, mat, u)
+VTKGridFile("block", dh) do vtk
     write_solution(vtk, dh, u)
-    write_cell_data(vtk, σ₁, "max_principal_stress")
+    # write_cell_data(vtk, σ₁, "max_principal_stress")
+    write_projection(vtk, proj, project(proj, σ₁, qr), "max. principal stress")
 end

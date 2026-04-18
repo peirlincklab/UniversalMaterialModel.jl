@@ -5,26 +5,34 @@ using Tensors
 export UniversalMaterial, Ψ, load_material
 
 """
-    UniversalMaterial{Topology, Nfibers, N}
+    UniversalMaterial{Topology, Nfibers, N, Compressible}
 
 Universal material model.
 
 Type parameters (compile-time — these drive the `@generated` specialisation):
-  - `Topology` – `NTuple{N, NTuple{4,Int}}`: one `(kInv, k0, k1, k2)` tuple per neuron.
-                  Encodes which invariant each neuron reads and which layer functions it uses.
-  - `Nfibers`  – number of fiber families: 0 (isotropic), 1, 2, or 3.
-  - `N`        – total number of neurons.
+  - `Topology`     – `NTuple{N, NTuple{4,Int}}`: one `(kInv, k0, k1, k2)` tuple per neuron.
+                     Encodes which invariant each neuron reads and which layer functions it uses.
+  - `Nfibers`      – number of fiber families: 0 (isotropic), 1, 2, or 3.
+  - `N`            – total number of neurons.
+  - `Compressible` – `Bool`: `true` when the network includes volumetric (kInv=3) or isochoric
+                     (kInv=16 for Ī₁, kInv=17 for Ī₂) neurons; `false` for purely
+                     isochoric/incompressible formulations.
+
+Supported invariant indices:
+  - 1–15 : standard structural invariants (I₁, I₂, I₃, fiber invariants)
+  - 16   : Ī₁ = J^(-2/3) I₁  (isochoric first invariant, compressible split)
+  - 17   : Ī₂ = J^(-4/3) I₂  (isochoric second invariant, compressible split)
 
 Runtime field:
   - `weights`  – `NTuple{N, NTuple{3,Float64}}`: one `(w0, w1, w2)` weight triple per neuron.
 
 Construct via `load_material(filename)`
 ```julia
-mat = load_material("NoeHooke.inp")
+mat = load_material("NeoHooke.inp")
 ```
-or by passing tuples of topology and weights directly, example
+or by passing tuples of topology and weights directly, example:
 ```julia
-# Material parameters for NeoHooke
+# Compressible Neo-Hookean:  Ψ = C₁₀(I₁−3) + (1/D₁)(J−1)²
 C₁₀ = 2.0
 D₁  = 0.1
 terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
@@ -32,7 +40,7 @@ terms = [(1.0,1.0,1.0,1.0,1.0,1.0,C₁₀),
 mat = UniversalMaterialModel.build_material(terms)
 ```
 """
-struct UniversalMaterial{Topology, Nfibers, N}
+struct UniversalMaterial{Topology, Nfibers, N, Compressible}
     weights::NTuple{N, NTuple{3, Float64}}
 end
 
@@ -85,17 +93,24 @@ end
 #   • no runtime branches on kInv / kf values
 #   • only the invariants actually needed by the network computed
 #   • fiber quantities computed only when required
-@generated function Ψ(C, mat::UniversalMaterial{Topology, Nfibers, N}; fibers::NTuple{Nfibers, Vec{3}}) where {Topology, Nfibers, N}
+@generated function Ψ(C, mat::UniversalMaterial{Topology, Nfibers, N, Compressible}; fibers::NTuple{Nfibers, Vec{3}}) where {Topology, Nfibers, N, Compressible}
     T = eltype(C)
     # Invariant indices actually referenced by this particular network.
     needed = Set{Int}(Topology[i][1] for i in 1:N)
     expr = Expr[]
-    # I₁ is also needed as an intermediate for I₂
-    !isempty(needed ∩ (1:2)) && push!(expr, :(I1 = tr(C)))
-    # I₂ = tr(C²) = dcontract(C,C) for symmetric C
-    2 ∈ needed && push!(expr, :(I2 = (I1 * I1 - dcontract(C, C)) / 2))
-    # I₃ in the list
-    3 ∈ needed && push!(expr, :(I3 = det(C)))
+    # I₁: needed directly, as intermediate for I₂, or as intermediate for Ī₁/Ī₂ (kInv 16/17)
+    !isempty(needed ∩ Set([1, 2, 16, 17])) && push!(expr, :(I1 = tr(C)))
+    # I₂: needed directly or as intermediate for Ī₂ (kInv 17)
+    (2 ∈ needed || 17 ∈ needed) && push!(expr, :(I2 = (I1 * I1 - dcontract(C, C)) / 2))
+    # I₃: needed directly, or as intermediate for isochoric invariants Ī₁/Ī₂
+    (3 ∈ needed || !isempty(needed ∩ (16:17))) && push!(expr, :(I3 = det(C)))
+    # Isochoric invariants for compressible decoupled formulation
+    # Ī₁ = J^(-2/3) I₁ = I₃^(-1/3) I₁,   Ī₂ = J^(-4/3) I₂ = I₃^(-2/3) I₂
+    if !isempty(needed ∩ (16:17))
+        push!(expr, :(J23 = cbrt(I3)))           # I₃^(1/3) = J^(2/3), shared factor
+        16 ∈ needed && push!(expr, :(I16 = I1 / J23))
+        17 ∈ needed && push!(expr, :(I17 = I2 / (J23 * J23)))
+    end
     # Fiber-1 quantities
     # f1 participates in: I₄, I₅ (fiber-1), I₆, I₇ (coupling 1-2), I₁₀, I₁₁ (coupling 1-3)
     need_f1 = Nfibers >= 1 && !isempty(needed ∩ Set([4, 5, 6, 7, 10, 11]))
@@ -170,8 +185,8 @@ function neuron_expr(::Val{k0}, ::Val{k1}, ::Val{k2}, w0, w1, w2, x) where {k0, 
 end
 
 # pretty print
-function Base.show(io::IO, mat::UniversalMaterial{Topology, Nfibers, N}) where {Topology, Nfibers, N}
-    print(io, "UniversalMaterial(N=$N neurons, Nfibers=$Nfibers, topology=[")
+function Base.show(io::IO, mat::UniversalMaterial{Topology, Nfibers, N, Compressible}) where {Topology, Nfibers, N, Compressible}
+    print(io, "UniversalMaterial(N=$N neurons, Nfibers=$Nfibers, Compressible=$Compressible, topology=[")
     for i in 1:N
         kInv, k0, k1, k2 = Topology[i]
         i > 1 && print(io, ", ")
@@ -191,7 +206,9 @@ function ref_expr(k::Int)
     k ∈ (10, 11) && return :(fibers[1] ⋅ fibers[3])
     k ∈ (12, 13) && return :(fibers[2] ⋅ fibers[3])
     k ∈ (14, 15) && return 1.0
-    error("Invariant index $k not supported (valid range: 1–15)")
+    k == 16      && return 3.0   # Ī₁ = 3 at reference (J=1, I₁=3)
+    k == 17      && return 3.0   # Ī₂ = 3 at reference (J=1, I₂=3)
+    error("Invariant index $k not supported (valid range: 1–17)")
 end
 
 """
@@ -294,12 +311,19 @@ function build_material(rows::Vector{NTuple{7, Float64}})
     topology = ntuple(i -> ntuple(j -> Int(rows[i][j]), 4), N)
     weights  = ntuple(i -> (rows[i][5], rows[i][6], rows[i][7]), N)
 
-    max_kinv = maximum(topology[i][1] for i in 1:N)
-    Nfibers  = max_kinv ≤  3 ? 0 :
-               max_kinv ≤  5 ? 1 :
-               max_kinv ≤  9 ? 2 : 3
+    kinvs = [topology[i][1] for i in 1:N]
 
-    return UniversalMaterial{topology, Nfibers, N}(weights)
+    # kInv 16/17 are isochoric isotropic invariants — exclude them from the fiber count.
+    fiber_kinvs = filter(k -> k ≤ 15, kinvs)
+    max_kinv    = isempty(fiber_kinvs) ? 0 : maximum(fiber_kinvs)
+    Nfibers     = max_kinv ≤  3 ? 0 :
+                  max_kinv ≤  5 ? 1 :
+                  max_kinv ≤  9 ? 2 : 3
+
+    # Compressible if any neuron uses a volumetric (I₃) or isochoric (Ī₁, Ī₂) invariant.
+    Compressible = any(k ∈ (3, 16, 17) for k in kinvs)
+
+    return UniversalMaterial{topology, Nfibers, N, Compressible}(weights)
 end
 
 end # module UniversalMaterialModel
