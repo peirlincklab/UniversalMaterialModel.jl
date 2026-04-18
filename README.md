@@ -1,8 +1,12 @@
+[![Test](https://github.com/marinlauber/UniversalMaterialModel.jl/actions/workflows/test.yml/badge.svg)](https://github.com/marinlauber/UniversalMaterialModel.jl/actions/workflows/test.yml)
+[![codecov.io](https://codecov.io/github/marinlauber/UniversalMaterialModel.jl/coverage.svg?branch=master)](https://codecov.io/github/marinlauber/UniversalMaterialModel.jl?branch=master)
+
 # UniversalMaterialModel.jl
 
-A universal material model for [Tensors.jl](https://github.com/Ferrite-FEM/Tensors.jl)-based finite element code implementing the ideas of:
-[**"A universal material model subroutine for soft matter systems", M. Peirlinck, J.A. Hurtado, M.K. Rausch, A. Buganza Tepole, E. Kuhl, Engineering with Computers, 2024**](https://doi.org/10.1007/s00366-024-02031-w)
+A universal material model for [Tensors.jl](https://github.com/Ferrite-FEM/Tensors.jl)-based finite element code.
 
+The implementation follows the ideas presented in the article:
+[**"A universal material model subroutine for soft matter systems", M. Peirlinck, J.A. Hurtado, M.K. Rausch, A. Buganza Tepole, E. Kuhl, Engineering with Computers, 2024**](https://doi.org/10.1007/s00366-024-02031-w).
 
 ## Installation
 
@@ -113,3 +117,11 @@ If you use UniversalMaterialModel.jl for research and publication, please cite t
   pages = {905–927}
 }
 ```
+
+### Issues and Support
+
+Please use the GitHub issue tracker to report any issues.
+
+### License
+
+UniversalMaterialModel.jl is released under the MIT License. See the [LICENSE](LICENSE) file for details.
